@@ -239,6 +239,7 @@ count_steps() {
   if [[ "$INSTALL_NVIDIA" == "true" ]]; then ((TOTAL_STEPS++)); fi
   if [[ "$INSTALL_NVIDIA" == "auto" ]] && lspci 2>/dev/null | grep -qi nvidia; then ((TOTAL_STEPS++)); fi
   [[ "$INSTALL_OLARES" == "true" ]] && ((TOTAL_STEPS++))
+  ((TOTAL_STEPS++))  # phase_network_access
 }
 
 # === FAZY ===
@@ -259,7 +260,11 @@ phase_docker() {
   say_phase "Docker"
   say "  Silnik kontenerów – wymagany m.in. dla n8n."
   echo ""
-  run_ultimate_step "Docker" "verify_docker" "curl -fsSL $URL_DOCKER | sh && systemctl enable docker && systemctl start docker" "Instalacja ze skryptu oficjalnego, włączenie usługi" "verify_apt_basics"
+  run_ultimate_step "Docker" "verify_docker" "
+    curl -fsSL $URL_DOCKER | sh &&
+    systemctl enable docker && systemctl start docker &&
+    [[ -n \"\${SUDO_USER:-}\" ]] && usermod -aG docker \"\$SUDO_USER\" && echo \"Użytkownik \$SUDO_USER dodany do grupy docker (newgrp docker lub re-login)\"
+  " "Instalacja ze skryptu oficjalnego, włączenie usługi, dodanie użytkownika do grupy docker" "verify_apt_basics"
 }
 
 phase_k3s() {
@@ -382,9 +387,10 @@ phase_n8n() {
   if verify_docker; then
     run_ultimate_step "n8n" "verify_n8n" "
       mkdir -p $BASE_DIR/n8n-data &&
+      chown -R 1000:1000 $BASE_DIR/n8n-data 2>/dev/null || true &&
       docker rm -f n8n 2>/dev/null || true &&
-      docker run -d --name n8n --restart unless-stopped -p 5678:5678 -v $BASE_DIR/n8n-data:/home/node/.n8n n8nio/n8n
-    " "Kontener Docker z wolumenem danych" "verify_docker"
+      docker run -d --name n8n --restart unless-stopped -p 0.0.0.0:5678:5678 -v $BASE_DIR/n8n-data:/home/node/.n8n n8nio/n8n
+    " "Kontener Docker z wolumenem danych (chown 1000:1000, bind 0.0.0.0)" "verify_docker"
   else
     say_step "n8n"; say_skip "Pominięto – wymaga Dockera"
   fi
@@ -406,6 +412,34 @@ phase_olares() {
   run_ultimate_standalone "Olares" "false" "curl -fsSL $URL_OLARES | bash -" "Uruchomienie instalatora Olares"
 }
 
+phase_network_access() {
+  say_phase "Dostęp sieciowy (IP:port, bez sudo dla docker)"
+  say "  UFW, PostgreSQL listen_addresses, Redis bind – usługi dostępne z sieci."
+  echo ""
+  run_ultimate_standalone "UFW + bind" "verify_always_run" "
+    command -v ufw >/dev/null 2>&1 && {
+      ufw allow 5678/tcp 2>/dev/null || true
+      ufw allow 9000/tcp 2>/dev/null || true
+      ufw allow 9001/tcp 2>/dev/null || true
+      ufw allow 11434/tcp 2>/dev/null || true
+      ufw allow 5432/tcp 2>/dev/null || true
+      ufw allow 6379/tcp 2>/dev/null || true
+      ufw --force enable 2>/dev/null || true
+      ufw reload 2>/dev/null || true
+    }
+    for f in /etc/postgresql/*/main/postgresql.conf; do
+      [[ -f \"\$f\" ]] && grep -q \"listen_addresses\" \"\$f\" && sed -i \"s/^#*listen_addresses.*/listen_addresses = '*'/\" \"\$f\" && systemctl restart postgresql 2>/dev/null || true
+    done
+    for f in /etc/postgresql/*/main/pg_hba.conf; do
+      [[ -f \"\$f\" ]] || continue
+      grep -q \"0.0.0.0/0\" \"\$f\" || echo \"host all all 0.0.0.0/0 scram-sha-256\" >> \"\$f\"
+    done 2>/dev/null || true
+    systemctl restart postgresql 2>/dev/null || true
+    [[ -f /etc/redis/redis.conf ]] && sed -i 's/^bind 127.0.0.1.*/bind 0.0.0.0/' /etc/redis/redis.conf 2>/dev/null || true
+    systemctl restart redis-server 2>/dev/null || true
+  " "UFW allow porty, PostgreSQL listen_addresses='*', Redis bind 0.0.0.0"
+}
+
 # === Raport końcowy ===
 print_final_report() {
   local HOST_IP=$(hostname -I | awk '{print $1}')
@@ -425,9 +459,10 @@ print_final_report() {
   say "  ─────────────────────────────────────────────────────────"
   say ""
   say "  ${BOLD}Następne kroki:${NC}"
-  say "  1. Weryfikacja: sudo bash scripts/verify-and-start-olares.sh"
-  say "  2. WireGuard: edytuj /etc/wireguard/${WG_INTERFACE}.conf i dodaj [Peer]"
-  say "  3. Olares: jeśli INSTALL_OLARES=true, dokończ aktywację w Wizard"
+  say "  1. Wyloguj i zaloguj ponownie (lub: newgrp docker) – docker bez sudo"
+  say "  2. Weryfikacja: sudo bash scripts/verify-and-start-olares.sh"
+  say "  3. WireGuard: edytuj /etc/wireguard/${WG_INTERFACE}.conf i dodaj [Peer]"
+  say "  4. Olares: jeśli INSTALL_OLARES=true, dokończ aktywację w Wizard"
   say ""
   say_section "KONIEC"
   echo ""
@@ -468,6 +503,7 @@ main() {
   phase_n8n
   phase_helm
   phase_olares
+  phase_network_access
 
   printf "\r%-60s\r" " "
   print_final_report

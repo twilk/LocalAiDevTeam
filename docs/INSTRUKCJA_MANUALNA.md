@@ -64,5 +64,6 @@ Kroki oznaczone jako **NO** lub **PARTIAL** w planie nie da się wykonać wyłą
 - Pełna weryfikacja pokrycia planu w dokumentacji: [VERIFIKACJA_POKRYCIA.md](VERIFIKACJA_POKRYCIA.md).
 - Kroki **YES** są wykonywane przez skrypt `scripts/setup-olares.sh`.
 - Po instalacji: `sudo bash scripts/verify-and-start-olares.sh` – weryfikacja, uruchomienie i podsumowanie serwisów.
+- Dostęp sieciowy (IP:port, docker bez sudo): `sudo bash scripts/apply-network-access.sh` – raz po instalacji.
 - Przed uruchomieniem skryptu upewnij się, że wykonano wszystkie kroki manualne z sekcji A2, A4 (instalacja OS) i A6 (decyzja sieciowa).
 - Skrypt nie wykonuje partycjonowania dysku – zakłada, że partycje są już utworzone.

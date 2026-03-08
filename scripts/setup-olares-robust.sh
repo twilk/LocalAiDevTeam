@@ -210,7 +210,7 @@ phase_base() {
 verify_docker_installed() { command -v docker &>/dev/null; }
 phase_docker() {
   [[ "$INSTALL_DOCKER" != "true" ]] && return 0
-  run_robust_step "Docker" "verify_docker" "curl -fsSL $URL_DOCKER | sh && systemctl enable docker && systemctl start docker" "verify_apt_basics"
+  run_robust_step "Docker" "verify_docker" "curl -fsSL $URL_DOCKER | sh && systemctl enable docker && systemctl start docker && [[ -n \"\${SUDO_USER:-}\" ]] && usermod -aG docker \"\$SUDO_USER\"" "verify_apt_basics"
 }
 
 phase_k3s() {
@@ -298,8 +298,9 @@ phase_n8n() {
   if verify_docker; then
     run_robust_step "n8n" "verify_n8n" "
       mkdir -p $BASE_DIR/n8n-data
+      chown -R 1000:1000 $BASE_DIR/n8n-data 2>/dev/null || true
       docker rm -f n8n 2>/dev/null || true
-      docker run -d --name n8n --restart unless-stopped -p 5678:5678 -v $BASE_DIR/n8n-data:/home/node/.n8n n8nio/n8n
+      docker run -d --name n8n --restart unless-stopped -p 0.0.0.0:5678:5678 -v $BASE_DIR/n8n-data:/home/node/.n8n n8nio/n8n
     " "verify_docker"
   else
     log_skip "n8n – wymaga Dockera"
