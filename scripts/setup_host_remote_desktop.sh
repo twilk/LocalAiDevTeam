@@ -147,7 +147,7 @@ ensure_xrdp_stack() {
   case "${DESKTOP_ENV}" in
     gnome)
       log "Instaluję pełny Ubuntu Desktop (GNOME)..."
-      pkgs+=(ubuntu-desktop gnome-session)
+      pkgs+=(ubuntu-desktop gnome-session libpam-gnome-keyring)
       ;;
     xfce)
       pkgs+=(xfce4 xfce4-goodies)
@@ -221,6 +221,23 @@ XSESSIONRC
   systemctl restart xrdp
 }
 
+ensure_pam_keyring() {
+  # GNOME Keyring – odblokowuje keyring przy logowaniu RDP (przeglądarka, VS Code, etc.)
+  local pam_file="/etc/pam.d/xrdp-sesman"
+  if [[ ! -f "${pam_file}" ]]; then return; fi
+  if grep -q "pam_gnome_keyring" "${pam_file}" 2>/dev/null; then
+    log "PAM gnome_keyring już skonfigurowany."
+    return
+  fi
+  log "Dodaję PAM gnome_keyring dla keyring w sesji RDP..."
+  if grep -q "@include common-auth" "${pam_file}"; then
+    sed -i '/@include common-auth/a auth optional pam_gnome_keyring.so' "${pam_file}"
+  fi
+  if grep -q "@include common-session" "${pam_file}"; then
+    sed -i '/@include common-session/a session optional pam_gnome_keyring.so auto_start' "${pam_file}"
+  fi
+}
+
 ensure_polkit_colord() {
   # Polkit blokuje sesję xRDP („Authentication required to create color profile").
   # Bez tego sesja się zamyka zaraz po zalogowaniu.
@@ -238,6 +255,25 @@ POLKIT
   else
     log "Reguła polkit dla colord już istnieje."
   fi
+}
+
+ensure_polkit_user_admin() {
+  # Pozwala na „Odhoduj" w Ustawieniach użytkowników przez RDP
+  local rule_file="/etc/polkit-1/rules.d/46-allow-user-admin.rules"
+  if [[ "${DESKTOP_ENV}" != "gnome" ]]; then return; fi
+  if [[ -f "${rule_file}" ]]; then
+    log "Reguła polkit user-admin już istnieje."
+    return
+  fi
+  log "Dodaję regułę polkit dla Ustawień użytkowników (Odhoduj)..."
+  cat > "${rule_file}" <<'POLKIT'
+polkit.addRule(function(action, subject) {
+  if (action.id === "org.gnome.controlcenter.user-accounts.administration" && subject.isInGroup("sudo")) {
+    return polkit.Result.AUTH_ADMIN;
+  }
+});
+POLKIT
+  chmod 644 "${rule_file}"
 }
 
 add_users_to_xrdp_group() {
@@ -340,9 +376,21 @@ create_or_update_users() {
     else
       log "Tworzę użytkownika ${username}"
       useradd -m -s /bin/bash "${username}"
-      cp -n /etc/skel/.xsession "/home/${username}/.xsession" || true
-      chown "${username}:${username}" "/home/${username}/.xsession" || true
-      chmod 644 "/home/${username}/.xsession" || true
+      if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+        echo "gnome-session" > "/home/${username}/.xsession"
+        cat > "/home/${username}/.xsessionrc" <<'XSRC'
+export XAUTHORITY=${HOME}/.Xauthority
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+XSRC
+        chown "${username}:${username}" "/home/${username}/.xsession" "/home/${username}/.xsessionrc"
+        chmod 644 "/home/${username}/.xsession" "/home/${username}/.xsessionrc"
+      else
+        cp -n /etc/skel/.xsession "/home/${username}/.xsession" 2>/dev/null || echo "startxfce4" > "/home/${username}/.xsession"
+        chown "${username}:${username}" "/home/${username}/.xsession"
+        chmod 644 "/home/${username}/.xsession"
+      fi
     fi
 
     echo "${username}:${password}" | chpasswd
@@ -430,14 +478,7 @@ print_summary() {
   echo "Po stronie Windows w skrypcie klienta ustaw:"
   echo "  HOST_TAILSCALE_IP=<wynik tailscale ip -4>"
   echo
-  echo "Jeśli logujesz się istniejącym użytkownikiem (nie z USER_SPECS), dodaj go do xrdp:"
-  echo "  sudo usermod -aG xrdp TWOJ_LOGIN"
-  if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
-    echo "  echo 'gnome-session' > ~/.xsession"
-    echo "  # oraz utwórz ~/.xsessionrc (XAUTHORITY, GNOME_SHELL_SESSION_MODE, XDG_*)"
-  else
-    echo "  echo 'startxfce4' > ~/.xsession"
-  fi
+  echo "Dla istniejącego użytkownika uruchom: sudo ./fix_xrdp_session_close.sh TWOJ_LOGIN"
   echo
   echo "Jeśli nie podałeś TAILSCALE_AUTHKEY, może być potrzebne ręczne logowanie:"
   echo "  sudo tailscale up --hostname=${TAILSCALE_HOSTNAME}"
@@ -452,6 +493,8 @@ main() {
   ensure_tailscale
   ensure_xrdp_stack
   ensure_polkit_colord
+  ensure_polkit_user_admin
+  ensure_pam_keyring
   setup_shared_dir
   create_or_update_users
   add_users_to_xrdp_group

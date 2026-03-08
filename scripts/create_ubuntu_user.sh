@@ -37,18 +37,18 @@ if getent group xrdp &>/dev/null; then
   echo "Dodano do grupy xrdp."
 fi
 
-# .xsession dla RDP (gnome lub xfce)
+# .xsession i .xsessionrc dla pełnego Ubuntu Desktop (GNOME) przez RDP
 HOME_DIR="$(getent passwd "${LOGIN}" | cut -d: -f6)"
 if [[ -d "${HOME_DIR}" ]]; then
-  if [[ -f /etc/skel/.xsession ]]; then
-    cp /etc/skel/.xsession "${HOME_DIR}/.xsession"
-    [[ -f /etc/skel/.xsessionrc ]] && cp /etc/skel/.xsessionrc "${HOME_DIR}/.xsessionrc"
-  else
-    echo "gnome-session" > "${HOME_DIR}/.xsession"
-  fi
-  chown "${LOGIN}:$(id -gn "${LOGIN}")" "${HOME_DIR}/.xsession"
-  chmod 644 "${HOME_DIR}/.xsession"
-  [[ -f "${HOME_DIR}/.xsessionrc" ]] && { chown "${LOGIN}:$(id -gn "${LOGIN}")" "${HOME_DIR}/.xsessionrc"; chmod 644 "${HOME_DIR}/.xsessionrc"; }
+  echo "gnome-session" > "${HOME_DIR}/.xsession"
+  cat > "${HOME_DIR}/.xsessionrc" <<'XSRC'
+export XAUTHORITY=${HOME}/.Xauthority
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+XSRC
+  chown "${LOGIN}:$(id -gn "${LOGIN}")" "${HOME_DIR}/.xsession" "${HOME_DIR}/.xsessionrc"
+  chmod 644 "${HOME_DIR}/.xsession" "${HOME_DIR}/.xsessionrc"
 fi
 
 echo ""

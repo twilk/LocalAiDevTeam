@@ -19,7 +19,7 @@ $HOST_TAILSCALE_DNS = "zpk-darwina-ai" # MagicDNS (opcjonalnie)
 $RDP_PORT = 3389
 
 # Połączenie RDP
-$RDP_USERNAME = ""                     # np. jan
+$RDP_USERNAME = "Wilk"                 # login na hoście Ubuntu
 $PROMPT_FOR_PASSWORD = $true           # mstsc i tak zwykle pyta / zapisuje po swojemu
 $RDP_WIDTH = 1920
 $RDP_HEIGHT = 1080
@@ -188,7 +188,7 @@ function New-RdpFile {
         "use multimon:i:$useMultimon"
         "desktopwidth:i:$RDP_WIDTH"
         "desktopheight:i:$RDP_HEIGHT"
-        "session bpp:i:32"
+        "session bpp:i:24"              # GNOME wymaga min. 24-bit; 32 czasem powoduje problemy
         "full address:s:$fullAddress"
         "prompt for credentials:i:1"
         "administrative session:i:$adminSession"
