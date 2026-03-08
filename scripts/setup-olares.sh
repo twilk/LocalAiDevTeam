@@ -163,18 +163,25 @@ run_step_standalone() {
   fi
 }
 
-# Raport końcowy
+# Raport końcowy – dobrze widoczny
 print_report() {
-  log "========== RAPORT KOŃCOWY =========="
+  echo ""
+  echo "=============================================="
+  echo " RAPORT KOŃCOWY setup-olares.sh"
+  echo "=============================================="
   log "Sukces: ${#SUCCESS_STEPS[@]} kroków"
   for s in "${SUCCESS_STEPS[@]}"; do
     log "  [OK] $s"
   done
   if [[ ${#FAILED_STEPS[@]} -gt 0 ]]; then
-    log "Niepowodzenie: ${#FAILED_STEPS[@]} kroków"
+    echo ""
+    log_fail "NIEPOWODZENIE: ${#FAILED_STEPS[@]} kroków – sprawdź log!"
     for s in "${FAILED_STEPS[@]}"; do
       log "  [FAIL] $s"
     done
+    echo ""
+    log "Szczegóły: $LOG_FILE"
+    log "Napraw: sudo bash scripts/setup-olares-robust.sh  (weryfikuje i doinstaluje brakujące)"
   fi
   if [[ ${#SKIPPED_STEPS[@]} -gt 0 ]]; then
     log "Pominięte (zależności): ${#SKIPPED_STEPS[@]} kroków"
@@ -182,8 +189,11 @@ print_report() {
       log "  [SKIP] $s"
     done
   fi
+  echo ""
   log "Log: $LOG_FILE"
-  log "===================================="
+  log "Weryfikacja serwisów: sudo bash scripts/verify-and-start-olares.sh"
+  echo "=============================================="
+  echo ""
 }
 
 # === FAZA 0: Inicjalizacja ===

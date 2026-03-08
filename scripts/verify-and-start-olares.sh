@@ -26,28 +26,40 @@ check_root() {
   [[ $EUID -ne 0 ]] && { fail "Uruchom jako root: sudo bash $0"; exit 1; }
 }
 
-# === Weryfikacja i uruchomienie serwisów ===
+# === Weryfikacja – wiele metod (systemctl, command, pliki) ===
+svc_installed() {
+  local svc="$1"
+  systemctl list-unit-files --type=service 2>/dev/null | grep -qE "^\s*${svc}(\.service)?[[:space:]]" ||
+  systemctl list-units --all --type=service 2>/dev/null | grep -q "${svc}" ||
+  systemctl status "$svc" &>/dev/null
+}
 check_service() {
   local name="$1"
   local svc="$2"
   local desc="${3:-$name}"
+  local alt_check="${4:-}"  # np. "docker" => command -v docker
 
-  if ! systemctl list-unit-files | grep -q "^${svc}\."; then
-    warn "$desc – nie zainstalowany (pomijam)"
+  if [[ -n "$alt_check" ]]; then
+    if eval "$alt_check" 2>/dev/null; then
+      if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        ok "$desc – działa"
+        return 0
+      fi
+      info "Uruchamiam $desc..."
+      systemctl start "$svc" 2>/dev/null && { ok "$desc – uruchomiono"; return 0; }
+    fi
+  elif ! svc_installed "$svc"; then
+    warn "$desc – nie wykryto (sprawdź log setup-olares: czy instalacja się powiodła?)"
     return 1
-  fi
-  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+  elif systemctl is-active --quiet "$svc" 2>/dev/null; then
     ok "$desc – działa"
     return 0
-  fi
-  info "Uruchamiam $desc..."
-  if systemctl start "$svc" 2>/dev/null; then
-    ok "$desc – uruchomiono"
-    return 0
   else
-    fail "$desc – nie udało się uruchomić"
-    return 1
+    info "Uruchamiam $desc..."
+    systemctl start "$svc" 2>/dev/null && { ok "$desc – uruchomiono"; return 0; }
   fi
+  fail "$desc – nie działa"
+  return 1
 }
 
 check_docker_container() {
@@ -95,13 +107,13 @@ main() {
   echo "=============================================="
   echo ""
 
-  # Serwisy systemd
-  check_service "Docker"      "docker"
-  check_service "K3s"         "k3s"
-  check_service "Ollama"      "ollama"
-  check_service "PostgreSQL"  "postgresql"
-  check_service "Redis"       "redis-server"
-  check_service "MinIO"       "minio"
+  # Serwisy systemd (alt_check = dodatkowa metoda wykrycia)
+  check_service "Docker"      "docker"      "Docker"      "command -v docker"
+  check_service "K3s"         "k3s"         "K3s"         "[[ -f /etc/rancher/k3s/k3s.yaml ]]"
+  check_service "Ollama"      "ollama"      "Ollama"      "command -v ollama"
+  check_service "PostgreSQL"  "postgresql"  "PostgreSQL"  "systemctl list-unit-files | grep -q postgresql"
+  check_service "Redis"       "redis-server" "Redis"      ""
+  check_service "MinIO"       "minio"       "MinIO"       "[[ -x /usr/local/bin/minio ]]"
 
   # WireGuard – może wymagać konfiguracji [Peer]
   for iface in wg0; do
