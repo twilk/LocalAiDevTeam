@@ -13,14 +13,14 @@ TAILSCALE_ENABLE_SSH="false"         # true/false
 
 # xRDP / pulpit
 RDP_PORT="3389"
-# xfce = lekki pulpit, gnome = pełny Ubuntu Desktop (GNOME, wszystkie aplikacje)
-DESKTOP_ENV="gnome"                  # xfce | gnome
+# xfce = niezawodny, lekki (ZALECANY) | gnome = pełny Ubuntu (niestabilny z xRDP)
+DESKTOP_ENV="xfce"                  # xfce | gnome
 
 # Użytkownicy
 # Format: "login:haslo:grupa1,grupa2;login2:haslo2:grupa1"
 # Jeśli nie chcesz tworzyć użytkowników w tym kroku, zostaw puste.
 USER_SPECS=""
-# Istniejący użytkownik do RDP (jeśli nie w USER_SPECS). Np. "jan" lub "jan piotr"
+# Istniejący użytkownik do RDP (jeśli nie w USER_SPECS). Np. "Wilk" lub "jan piotr"
 RDP_USERS=""
 
 # Współdzielone zasoby
@@ -192,7 +192,7 @@ export XDG_SESSION_DESKTOP=xfce
 export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_TYPE=x11
 
-exec startxfce4
+exec xfce4-session
 STARTWM_XFCE
   fi
   chmod 755 /etc/xrdp/startwm.sh
@@ -207,7 +207,7 @@ export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
 export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 XSESSIONRC
   else
-    echo "startxfce4" >/etc/skel/.xsession
+    echo "xfce4-session" >/etc/skel/.xsession
     rm -f /etc/skel/.xsessionrc
   fi
   chmod 644 /etc/skel/.xsession
@@ -337,7 +337,7 @@ XSRC
         chown "${u}:$(id -gn "${u}")" "${home}/.xsessionrc"
         chmod 644 "${home}/.xsessionrc"
       else
-        echo 'startxfce4' > "${xsession}"
+        echo 'xfce4-session' > "${xsession}"
       fi
       chown "${u}:$(id -gn "${u}")" "${xsession}"
       chmod 644 "${xsession}"
@@ -387,7 +387,7 @@ XSRC
         chown "${username}:${username}" "/home/${username}/.xsession" "/home/${username}/.xsessionrc"
         chmod 644 "/home/${username}/.xsession" "/home/${username}/.xsessionrc"
       else
-        cp -n /etc/skel/.xsession "/home/${username}/.xsession" 2>/dev/null || echo "startxfce4" > "/home/${username}/.xsession"
+        cp -n /etc/skel/.xsession "/home/${username}/.xsession" 2>/dev/null || echo "xfce4-session" > "/home/${username}/.xsession"
         chown "${username}:${username}" "/home/${username}/.xsession"
         chmod 644 "/home/${username}/.xsession"
       fi
@@ -478,7 +478,9 @@ print_summary() {
   echo "Po stronie Windows w skrypcie klienta ustaw:"
   echo "  HOST_TAILSCALE_IP=<wynik tailscale ip -4>"
   echo
-  echo "Dla istniejącego użytkownika uruchom: sudo ./fix_xrdp_session_close.sh TWOJ_LOGIN"
+  echo "Dla istniejącego użytkownika: sudo ./fix_xrdp_session_close.sh TWOJ_LOGIN"
+  echo ""
+  echo "Jeśli xRDP nadal się zamyka, użyj NoMachine: sudo ./setup_host_nomachine.sh"
   echo
   echo "Jeśli nie podałeś TAILSCALE_AUTHKEY, może być potrzebne ręczne logowanie:"
   echo "  sudo tailscale up --hostname=${TAILSCALE_HOSTNAME}"

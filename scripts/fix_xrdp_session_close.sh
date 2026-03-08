@@ -55,7 +55,7 @@ export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 XSRC
 else
   # Xfce
-  echo 'startxfce4' > "${HOME_DIR}/.xsession"
+  echo 'xfce4-session' > "${HOME_DIR}/.xsession"
   rm -f "${HOME_DIR}/.xsessionrc"
 fi
 chown "${USER}:$(id -gn "${USER}")" "${HOME_DIR}/.xsession"

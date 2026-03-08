@@ -37,18 +37,12 @@ if getent group xrdp &>/dev/null; then
   echo "Dodano do grupy xrdp."
 fi
 
-# .xsession i .xsessionrc dla pełnego Ubuntu Desktop (GNOME) przez RDP
+# .xsession dla RDP (Xfce – niezawodny)
 HOME_DIR="$(getent passwd "${LOGIN}" | cut -d: -f6)"
 if [[ -d "${HOME_DIR}" ]]; then
-  echo "gnome-session" > "${HOME_DIR}/.xsession"
-  cat > "${HOME_DIR}/.xsessionrc" <<'XSRC'
-export XAUTHORITY=${HOME}/.Xauthority
-export GNOME_SHELL_SESSION_MODE=ubuntu
-export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
-export XDG_CURRENT_DESKTOP=ubuntu:GNOME
-XSRC
-  chown "${LOGIN}:$(id -gn "${LOGIN}")" "${HOME_DIR}/.xsession" "${HOME_DIR}/.xsessionrc"
-  chmod 644 "${HOME_DIR}/.xsession" "${HOME_DIR}/.xsessionrc"
+  echo "xfce4-session" > "${HOME_DIR}/.xsession"
+  chown "${LOGIN}:$(id -gn "${LOGIN}")" "${HOME_DIR}/.xsession"
+  chmod 644 "${HOME_DIR}/.xsession"
 fi
 
 echo ""

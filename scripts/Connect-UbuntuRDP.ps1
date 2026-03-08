@@ -19,7 +19,7 @@ $HOST_TAILSCALE_DNS = "zpk-darwina-ai" # MagicDNS (opcjonalnie)
 $RDP_PORT = 3389
 
 # Połączenie RDP
-$RDP_USERNAME = "Wilk"                 # login na hoście Ubuntu
+$RDP_USERNAME = "Wilk"                 # login na hoście (pusty = podaj przy połączeniu)
 $PROMPT_FOR_PASSWORD = $true           # mstsc i tak zwykle pyta / zapisuje po swojemu
 $RDP_WIDTH = 1920
 $RDP_HEIGHT = 1080
