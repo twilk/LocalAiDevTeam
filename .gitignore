@@ -1,0 +1,25 @@
+# Secrets / local config
+config.env
+*.env.local
+.env
+
+# Logs
+*.log
+/var/log/
+
+# Cursor / IDE
+.cursor/
+.vscode/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python (jeśli będzie)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node (jeśli będzie)
+node_modules/
