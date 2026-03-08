@@ -13,13 +13,15 @@ TAILSCALE_ENABLE_SSH="false"         # true/false
 
 # xRDP / pulpit
 RDP_PORT="3389"
-DESKTOP_ENV="xfce"                   # obecnie skrypt konfiguruje xfce
-INSTALL_GUI_METAPACKAGE="false"      # true = doinstaluje xubuntu-desktop (cięższe); false = lekkie xfce4
+# xfce = lekki pulpit, gnome = pełny Ubuntu Desktop (GNOME, wszystkie aplikacje)
+DESKTOP_ENV="gnome"                  # xfce | gnome
 
 # Użytkownicy
 # Format: "login:haslo:grupa1,grupa2;login2:haslo2:grupa1"
 # Jeśli nie chcesz tworzyć użytkowników w tym kroku, zostaw puste.
 USER_SPECS=""
+# Istniejący użytkownik do RDP (jeśli nie w USER_SPECS). Np. "jan" lub "jan piotr"
+RDP_USERS=""
 
 # Współdzielone zasoby
 CREATE_SHARED_DIR="true"
@@ -135,8 +137,6 @@ ensure_xrdp_stack() {
   local pkgs=(
     xrdp
     xorgxrdp
-    xfce4
-    xfce4-goodies
     dbus-x11
     x11-xserver-utils
     acl
@@ -144,29 +144,48 @@ ensure_xrdp_stack() {
     policykit-1
   )
 
-  if [[ "${INSTALL_GUI_METAPACKAGE}" == "true" ]]; then
-    pkgs+=(xubuntu-desktop)
-  fi
+  case "${DESKTOP_ENV}" in
+    gnome)
+      log "Instaluję pełny Ubuntu Desktop (GNOME)..."
+      pkgs+=(ubuntu-desktop gnome-session)
+      ;;
+    xfce)
+      pkgs+=(xfce4 xfce4-goodies)
+      ;;
+    *)
+      die "Nieznany DESKTOP_ENV=${DESKTOP_ENV}. Użyj: xfce | gnome"
+      ;;
+  esac
 
   install_packages "${pkgs[@]}"
 
   log "Dodaję użytkownika xrdp do grupy ssl-cert..."
   adduser xrdp ssl-cert >/dev/null 2>&1 || true
 
-  log "Konfiguruję start sesji xRDP na Xfce..."
+  log "Konfiguruję startwm.sh dla ${DESKTOP_ENV}..."
   if [[ ! -f /etc/xrdp/startwm.sh.backup-by-chatgpt ]]; then
     cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.backup-by-chatgpt
   fi
 
-  cat >/etc/xrdp/startwm.sh <<'EOF'
+  if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+    cat >/etc/xrdp/startwm.sh <<'STARTWM_GNOME'
 #!/bin/sh
-if [ -r /etc/profile ]; then
-  . /etc/profile
-fi
+if [ -r /etc/profile ]; then . /etc/profile; fi
+if [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi
 
-if [ -r "$HOME/.profile" ]; then
-  . "$HOME/.profile"
-fi
+export DESKTOP_SESSION=ubuntu
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+export XDG_SESSION_TYPE=x11
+
+test -x /etc/X11/Xsession && exec /etc/X11/Xsession
+exec /bin/sh /etc/X11/Xsession
+STARTWM_GNOME
+  else
+    cat >/etc/xrdp/startwm.sh <<'STARTWM_XFCE'
+#!/bin/sh
+if [ -r /etc/profile ]; then . /etc/profile; fi
+if [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi
 
 export DESKTOP_SESSION=xfce
 export XDG_SESSION_DESKTOP=xfce
@@ -174,14 +193,25 @@ export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_TYPE=x11
 
 exec startxfce4
-EOF
+STARTWM_XFCE
+  fi
   chmod 755 /etc/xrdp/startwm.sh
 
-  log "Przygotowuję domyślną sesję dla nowych użytkowników..."
-  cat >/etc/skel/.xsession <<'EOF'
-startxfce4
-EOF
+  log "Przygotowuję domyślną sesję w /etc/skel dla ${DESKTOP_ENV}..."
+  if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+    echo "gnome-session" >/etc/skel/.xsession
+    cat >/etc/skel/.xsessionrc <<'XSESSIONRC'
+export XAUTHORITY=${HOME}/.Xauthority
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+XSESSIONRC
+  else
+    echo "startxfce4" >/etc/skel/.xsession
+    rm -f /etc/skel/.xsessionrc
+  fi
   chmod 644 /etc/skel/.xsession
+  [[ -f /etc/skel/.xsessionrc ]] && chmod 644 /etc/skel/.xsessionrc
 
   if [[ -f /etc/xrdp/xrdp.ini ]]; then
     sed -i "s/^port=.*/port=${RDP_PORT}/" /etc/xrdp/xrdp.ini || true
@@ -189,6 +219,94 @@ EOF
 
   systemctl enable xrdp
   systemctl restart xrdp
+}
+
+ensure_polkit_colord() {
+  # Polkit blokuje sesję xRDP („Authentication required to create color profile").
+  # Bez tego sesja się zamyka zaraz po zalogowaniu.
+  local rule_file="/etc/polkit-1/rules.d/45-allow-colord.rules"
+  if [[ ! -f "${rule_file}" ]]; then
+    log "Dodaję regułę polkit dla colord (fix xRDP)..."
+    cat > "${rule_file}" <<'POLKIT'
+polkit.addRule(function(action, subject) {
+  if (action.id.indexOf("org.freedesktop.color-manager.") === 0) {
+    return polkit.Result.YES;
+  }
+});
+POLKIT
+    chmod 644 "${rule_file}"
+  else
+    log "Reguła polkit dla colord już istnieje."
+  fi
+}
+
+add_users_to_xrdp_group() {
+  local users=()
+  if [[ -n "${USER_SPECS}" ]]; then
+    while IFS= read -r -d ';' entry; do
+      [[ -z "${entry}" ]] && continue
+      local uname
+      uname="${entry%%:*}"
+      [[ -n "${uname}" ]] && users+=("${uname}")
+    done <<< "${USER_SPECS};"
+  fi
+  if [[ -n "${RDP_USERS}" ]]; then
+    for u in ${RDP_USERS//[,]/ }; do
+      [[ -n "${u}" ]] && users+=("${u}")
+    done
+  fi
+  for u in "${users[@]}"; do
+    if id "${u}" &>/dev/null; then
+      if groups "${u}" | grep -q '\bxrdp\b'; then
+        log "Użytkownik ${u} jest już w grupie xrdp."
+      else
+        log "Dodaję ${u} do grupy xrdp."
+        usermod -aG xrdp "${u}"
+      fi
+    else
+      warn "Użytkownik ${u} nie istnieje – pomijam dodanie do xrdp."
+    fi
+  done
+}
+
+ensure_xsession_for_rdp_users() {
+  local users=()
+  if [[ -n "${USER_SPECS}" ]]; then
+    while IFS= read -r -d ';' entry; do
+      [[ -z "${entry}" ]] && continue
+      local uname="${entry%%:*}"
+      [[ -n "${uname}" ]] && users+=("${uname}")
+    done <<< "${USER_SPECS};"
+  fi
+  if [[ -n "${RDP_USERS}" ]]; then
+    for u in ${RDP_USERS//[,]/ }; do
+      [[ -n "${u}" ]] && users+=("${u}")
+    done
+  fi
+  for u in "${users[@]}"; do
+    local home
+    home="$(getent passwd "${u}" 2>/dev/null | cut -d: -f6)"
+    [[ -z "${home}" || ! -d "${home}" ]] && continue
+    local xsession="${home}/.xsession"
+    if [[ ! -f "${xsession}" ]]; then
+      log "Tworzę ${xsession} dla ${u} (${DESKTOP_ENV})"
+      if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+        echo 'gnome-session' > "${xsession}"
+        cat > "${home}/.xsessionrc" <<'XSRC'
+export XAUTHORITY=${HOME}/.Xauthority
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CONFIG_DIRS=/etc/xdg/xdg-ubuntu:/etc/xdg
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+XSRC
+        chown "${u}:$(id -gn "${u}")" "${home}/.xsessionrc"
+        chmod 644 "${home}/.xsessionrc"
+      else
+        echo 'startxfce4' > "${xsession}"
+      fi
+      chown "${u}:$(id -gn "${u}")" "${xsession}"
+      chmod 644 "${xsession}"
+    fi
+  done
 }
 
 create_group_if_missing() {
@@ -300,6 +418,10 @@ print_summary() {
   echo "Hostname Tailscale : ${TAILSCALE_HOSTNAME}"
   echo "Port RDP           : ${RDP_PORT}"
   echo "Pulpit             : ${DESKTOP_ENV}"
+  if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+    echo
+    echo "UWAGA (GNOME): Zaloguj się wylogowany lokalnie – nie możesz być na konsoli i RDP jednocześnie."
+  fi
   echo "Katalog współdz.   : ${SHARED_DIR}"
   echo
   echo "Sprawdź IP Tailscale poleceniem:"
@@ -307,6 +429,15 @@ print_summary() {
   echo
   echo "Po stronie Windows w skrypcie klienta ustaw:"
   echo "  HOST_TAILSCALE_IP=<wynik tailscale ip -4>"
+  echo
+  echo "Jeśli logujesz się istniejącym użytkownikiem (nie z USER_SPECS), dodaj go do xrdp:"
+  echo "  sudo usermod -aG xrdp TWOJ_LOGIN"
+  if [[ "${DESKTOP_ENV}" == "gnome" ]]; then
+    echo "  echo 'gnome-session' > ~/.xsession"
+    echo "  # oraz utwórz ~/.xsessionrc (XAUTHORITY, GNOME_SHELL_SESSION_MODE, XDG_*)"
+  else
+    echo "  echo 'startxfce4' > ~/.xsession"
+  fi
   echo
   echo "Jeśli nie podałeś TAILSCALE_AUTHKEY, może być potrzebne ręczne logowanie:"
   echo "  sudo tailscale up --hostname=${TAILSCALE_HOSTNAME}"
@@ -320,8 +451,11 @@ main() {
   set_timezone
   ensure_tailscale
   ensure_xrdp_stack
+  ensure_polkit_colord
   setup_shared_dir
   create_or_update_users
+  add_users_to_xrdp_group
+  ensure_xsession_for_rdp_users
   configure_firewall
   verify_services
   print_summary
