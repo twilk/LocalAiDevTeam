@@ -240,6 +240,7 @@ count_steps() {
   if [[ "$INSTALL_NVIDIA" == "auto" ]] && lspci 2>/dev/null | grep -qi nvidia; then ((TOTAL_STEPS++)); fi
   [[ "$INSTALL_OLARES" == "true" ]] && ((TOTAL_STEPS++))
   ((TOTAL_STEPS++))  # phase_network_access
+  ((TOTAL_STEPS++))  # phase_services_restart
 }
 
 # === FAZY ===
@@ -440,6 +441,53 @@ phase_network_access() {
   " "UFW allow porty, PostgreSQL listen_addresses='*', Redis bind 0.0.0.0"
 }
 
+_restart_and_verify_systemd() {
+  local name="$1" svc="$2"
+  say "     ${DIM}→ $name${NC} "
+  systemctl stop "$svc" 2>/dev/null || true
+  sleep 1
+  systemctl start "$svc" 2>/dev/null || true
+  sleep 2
+  if systemctl is-active --quiet "$svc" 2>/dev/null; then
+    say_done "$name – działa"
+  else
+    say_fail "$name – nie uruchomiono (systemctl status $svc)"
+  fi
+}
+
+phase_services_restart() {
+  say_phase "Restart usług (zatrzymaj → uruchom → weryfikuj)"
+  say "  Wyłączenie, ponowne uruchomienie i potwierdzenie w systemie."
+  echo ""
+  CURRENT_STEP=$((CURRENT_STEP + 1))
+  progress_bar "$CURRENT_STEP" "$TOTAL_STEPS"
+  say "  ${BOLD}Zatrzymywanie...${NC}"
+  docker stop n8n 2>/dev/null || true
+  systemctl stop minio ollama postgresql redis-server k3s 2>/dev/null || true
+  sleep 3
+  say "  ${BOLD}Uruchamianie i weryfikacja:${NC}"
+  say "     ${DIM}→ Docker${NC} "
+  systemctl start docker 2>/dev/null || true
+  sleep 2
+  if systemctl is-active --quiet docker 2>/dev/null; then say_done "Docker – działa"; else say_fail "Docker – nie uruchomiono"; fi
+  [[ "$INSTALL_K3S" == "true" ]] && _restart_and_verify_systemd "K3s" "k3s"
+  [[ "$INSTALL_POSTGRES" == "true" ]] && _restart_and_verify_systemd "PostgreSQL" "postgresql"
+  [[ "$INSTALL_REDIS" == "true" ]] && _restart_and_verify_systemd "Redis" "redis-server"
+  [[ "$INSTALL_OLLAMA" == "true" ]] && _restart_and_verify_systemd "Ollama" "ollama"
+  [[ "$INSTALL_MINIO" == "true" ]] && _restart_and_verify_systemd "MinIO" "minio"
+  if [[ "$INSTALL_N8N" == "true" ]] && command -v docker &>/dev/null; then
+    say "     ${DIM}→ n8n${NC} "
+    docker start n8n 2>/dev/null || true
+    sleep 3
+    if docker ps 2>/dev/null | grep -q n8n; then
+      say_done "n8n – działa"
+    else
+      say_fail "n8n – nie uruchomiono (docker logs n8n)"
+    fi
+  fi
+  echo ""
+}
+
 # === Raport końcowy ===
 print_final_report() {
   local HOST_IP=$(hostname -I | awk '{print $1}')
@@ -504,6 +552,7 @@ main() {
   phase_helm
   phase_olares
   phase_network_access
+  phase_services_restart
 
   printf "\r%-60s\r" " "
   print_final_report
