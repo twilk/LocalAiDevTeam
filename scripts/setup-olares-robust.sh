@@ -225,7 +225,13 @@ phase_k3s() {
 
 phase_ollama() {
   [[ "$INSTALL_OLLAMA" != "true" ]] && return 0
-  run_robust_step "Ollama" "verify_ollama" "curl -fsSL $URL_OLLAMA | sh && systemctl enable ollama 2>/dev/null; systemctl start ollama 2>/dev/null" "verify_apt_basics"
+  run_robust_step "Ollama" "verify_ollama" "
+    curl -fsSL $URL_OLLAMA | sh &&
+    mkdir -p /etc/systemd/system/ollama.service.d &&
+    echo '[Service]
+Environment=OLLAMA_HOST=0.0.0.0' > /etc/systemd/system/ollama.service.d/override.conf
+    systemctl daemon-reload && systemctl enable ollama 2>/dev/null && systemctl start ollama 2>/dev/null
+  " "verify_apt_basics"
 }
 
 phase_postgres() {
@@ -253,7 +259,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/minio server $BASE_DIR/minio-data
+ExecStart=/usr/local/bin/minio server --console-address :9001 $BASE_DIR/minio-data
 User=minio
 Environment=MINIO_ROOT_USER=$MINIO_ROOT_USER
 Environment=MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD

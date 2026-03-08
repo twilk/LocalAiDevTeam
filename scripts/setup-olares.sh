@@ -345,7 +345,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/minio server $BASE_DIR/minio-data
+ExecStart=/usr/local/bin/minio server --console-address :9001 $BASE_DIR/minio-data
 User=minio
 Environment=MINIO_ROOT_USER=$MINIO_ROOT_USER
 Environment=MINIO_ROOT_PASSWORD=$MINIO_ROOT_PASSWORD

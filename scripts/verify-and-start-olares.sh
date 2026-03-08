@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
-# verify-and-start-olares.sh – Weryfikacja, uruchomienie i podsumowanie serwisów po setup-olares.sh
+# verify-and-start-olares.sh – Uruchamia serwisy, testuje porty, diagnostykuje błędy
 # Uruchom: sudo bash verify-and-start-olares.sh
-# Lub:     source config.env && sudo -E bash verify-and-start-olares.sh
 #
 set -uo pipefail
 
@@ -15,12 +14,22 @@ HOST_IP="${HOST_IP:-$(hostname -I | awk '{print $1}')}"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 fail()  { echo -e "${RED}[FAIL]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 info()  { echo "[INFO] $*"; }
+
+# Test portu – zwraca 0 jeśli osiągalny
+port_reachable() {
+  local host="${1:-127.0.0.1}"
+  local port="$2"
+  bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null && return 0
+  command -v nc &>/dev/null && nc -z -w2 "$host" "$port" 2>/dev/null && return 0
+  return 1
+}
 
 check_root() {
   [[ $EUID -ne 0 ]] && { fail "Uruchom jako root: sudo bash $0"; exit 1; }
@@ -62,6 +71,67 @@ check_service() {
   return 1
 }
 
+# PostgreSQL – Ubuntu używa postgresql lub postgresql@VERSION-main
+# Ollama domyślnie nasłuchuje tylko na 127.0.0.1 – napraw dla dostępu zdalnego
+ensure_ollama_bind_all() {
+  if ! systemctl list-unit-files | grep -q ollama; then return 0; fi
+  local conf="/etc/systemd/system/ollama.service.d/override.conf"
+  if ! grep -q "OLLAMA_HOST" "$conf" 2>/dev/null; then
+    mkdir -p "$(dirname "$conf")"
+    cat > "$conf" <<'EOF'
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+EOF
+    systemctl daemon-reload
+    systemctl restart ollama 2>/dev/null
+    sleep 2
+  fi
+}
+
+# MinIO console (9001) – jawny port konsoli
+ensure_minio_console() {
+  [[ ! -f /etc/systemd/system/minio.service ]] && return 0
+  if ! grep -q "console-address" /etc/systemd/system/minio.service 2>/dev/null; then
+    sed -i 's|ExecStart=/usr/local/bin/minio server |ExecStart=/usr/local/bin/minio server --console-address :9001 |' /etc/systemd/system/minio.service
+    systemctl daemon-reload
+    systemctl restart minio 2>/dev/null
+    sleep 2
+  fi
+}
+
+# n8n – sprawdź czy kontener mapuje port na 0.0.0.0
+ensure_n8n_bind_all() {
+  if ! docker ps -a --format '{{.Names}}' | grep -q ^n8n$; then return 0; fi
+  if docker port n8n 5678 2>/dev/null | grep -q "0.0.0.0"; then return 0; fi
+  info "n8n – kontener powinien mieć -p 5678:5678 (już ustawione w setup)"
+  docker start n8n 2>/dev/null
+}
+
+check_postgresql() {
+  local desc="PostgreSQL"
+  if pg_isready -h localhost -U postgres 2>/dev/null || pg_isready -h localhost 2>/dev/null; then
+    ok "$desc – działa"
+    return 0
+  fi
+  if ! dpkg -l postgresql* 2>/dev/null | grep -q ^ii; then
+    warn "$desc – nie zainstalowany (apt install postgresql postgresql-contrib)"
+    return 1
+  fi
+  info "Uruchamiam $desc..."
+  systemctl start postgresql 2>/dev/null
+  # Ubuntu 22.04+: czasem postgresql@16-main zamiast postgresql
+  systemctl start $(systemctl list-unit-files -t service --no-pager 2>/dev/null | grep -oE 'postgresql@[^[:space:]]+' | head -1) 2>/dev/null
+  sleep 2
+  if pg_isready -h localhost 2>/dev/null; then
+    ok "$desc – uruchomiono"
+    return 0
+  fi
+  fail "$desc – nie odpowiada"
+  info "Diagnostyka: systemctl status postgresql; journalctl -u postgresql -n 30"
+  info "Nowa instalacja bez klastra? pg_lsclusters; sudo pg_createcluster 16 main --start"
+  return 1
+}
+
 check_docker_container() {
   local name="$1"
   local container="$2"
@@ -84,7 +154,7 @@ check_docker_container() {
 
 # === Konfiguracja podstawowa ===
 configure_postgres_n8n() {
-  if ! systemctl is-active --quiet postgresql 2>/dev/null; then return 0; fi
+  if ! pg_isready -h localhost 2>/dev/null; then return 0; fi
   local db_user="${N8N_DB_USER:-n8n}"
   local db_name="${N8N_DB_NAME:-n8n}"
   if sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$db_name'" 2>/dev/null | grep -q 1; then
@@ -111,9 +181,11 @@ main() {
   check_service "Docker"      "docker"      "Docker"      "command -v docker"
   check_service "K3s"         "k3s"         "K3s"         "[[ -f /etc/rancher/k3s/k3s.yaml ]]"
   check_service "Ollama"      "ollama"      "Ollama"      "command -v ollama"
-  check_service "PostgreSQL"  "postgresql"  "PostgreSQL"  "systemctl list-unit-files | grep -q postgresql"
+  ensure_ollama_bind_all
+  check_postgresql
   check_service "Redis"       "redis-server" "Redis"      ""
   check_service "MinIO"       "minio"       "MinIO"       "[[ -x /usr/local/bin/minio ]]"
+  ensure_minio_console
 
   # WireGuard – może wymagać konfiguracji [Peer]
   for iface in wg0; do
@@ -138,27 +210,55 @@ main() {
   # Opcjonalna konfiguracja
   configure_postgres_n8n
 
-  # === Podsumowanie połączeń ===
+  # === Test łączności na portach ===
   echo ""
   echo "=============================================="
-  echo " Adresy i porty (HOST: ${HOST_IP})"
+  echo " Test łączności (HOST: ${HOST_IP})"
   echo "=============================================="
   echo ""
-  echo "n8n (workflow):     http://${HOST_IP}:5678"
-  echo "MinIO API:          http://${HOST_IP}:9000"
-  echo "MinIO Console:      http://${HOST_IP}:9001  (domyślne: minioadmin/minioadmin)"
-  echo "PostgreSQL:         ${HOST_IP}:5432"
-  echo "Redis:              ${HOST_IP}:6379"
-  echo "Ollama API:         http://${HOST_IP}:11434"
-  echo "K3s API:            https://${HOST_IP}:6443  (KUBECONFIG=/etc/rancher/k3s/k3s.yaml)"
+  test_port() {
+    local name="$1" port="$2" url="$3" svc="$4" http="${5:-}"
+    local ok_msg fix_msg
+    if port_reachable "$HOST_IP" "$port" || port_reachable "127.0.0.1" "$port"; then
+      ok "$name (port $port) – osiągalny"
+      return 0
+    fi
+    fail "$name (port $port) – nie odpowiada"
+    if [[ -n "$svc" ]]; then
+      info "  Błąd: $(systemctl is-active "$svc" 2>/dev/null || echo '?')"
+      info "  Log:  journalctl -u $svc -n 15 --no-pager"
+    fi
+    case "$name" in
+      n8n*)    fix_msg="docker ps -a | grep n8n; docker logs n8n --tail 25"; svc="";;
+      Ollama)  fix_msg="OLLAMA_HOST=0.0.0.0 w /etc/systemd/system/ollama.service.d/override.conf";;
+      MinIO)   fix_msg="--console-address :9001 w ExecStart minio; UFW/Firewall?";;
+      PostgreSQL) fix_msg="pg_lsclusters; sudo pg_createcluster 16 main --start";;
+      Redis)   fix_msg="bind 127.0.0.1 – Redis tylko lokalnie (bezpieczeństwo)";;
+      *)       fix_msg="sprawdź firewall: ufw status";;
+    esac
+    info "  Napraw: $fix_msg"
+    echo ""
+    return 1
+  }
+  test_port "n8n (HTTP)"        5678 "http://${HOST_IP}:5678" "" "http"
+  test_port "MinIO API"         9000 "http://${HOST_IP}:9000" "minio" "http"
+  test_port "MinIO Console"     9001 "http://${HOST_IP}:9001" "minio" "http"
+  test_port "Ollama API"       11434 "http://${HOST_IP}:11434" "ollama" "http"
+  test_port "PostgreSQL"        5432 "${HOST_IP}:5432 (klient psql)" "postgresql"
+  test_port "Redis"             6379 "${HOST_IP}:6379 (klient redis-cli)" "redis-server"
+  test_port "K3s API"           6443 "https://${HOST_IP}:6443" "k3s"
+
+  echo "=============================================="
+  echo " Adresy (tylko HTTP w przeglądarce: n8n, MinIO, Ollama)"
+  echo "=============================================="
   echo ""
-  echo "Katalog bazowy:     ${BASE_DIR}"
-  echo "  - n8n-data:       ${BASE_DIR}/n8n-data"
-  echo "  - minio-data:     ${BASE_DIR}/minio-data"
+  echo "  n8n:          http://${HOST_IP}:5678"
+  echo "  MinIO API:    http://${HOST_IP}:9000"
+  echo "  MinIO Console: http://${HOST_IP}:9001  (minioadmin/minioadmin)"
+  echo "  Ollama:       http://${HOST_IP}:11434"
   echo ""
-  echo "Aby n8n używał PostgreSQL, dodaj przy docker run:"
-  echo "  -e DB_TYPE=postgresdb -e DB_POSTGRESDB_HOST=localhost"
-  echo "  -e DB_POSTGRESDB_DATABASE=n8n -e DB_POSTGRESDB_USER=n8n"
+  echo "  PostgreSQL, Redis, K3s – dostęp przez dedykowane klienty (psql, redis-cli, kubectl)"
+  echo "  Katalog: ${BASE_DIR}/"
   echo "=============================================="
 }
 
