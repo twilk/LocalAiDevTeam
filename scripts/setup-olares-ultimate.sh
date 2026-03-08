@@ -79,7 +79,9 @@ say_skip()   { echo -e "     ${YELLOW}Wynik: $*${NC}"; }
 progress_bar() {
   local cur=$1 tot=$2
   local pct=0; [[ $tot -gt 0 ]] && pct=$((cur * 100 / tot))
-  local w=40 filled=$((w * cur / tot)) empty=$((w - filled))
+  local width=40
+  local filled=$((width * cur / (tot || 1)))
+  local empty=$((width - filled))
   printf "\r     ${DIM}["
   printf "%${filled}s" | tr ' ' '█'
   printf "%${empty}s" | tr ' ' '░'
