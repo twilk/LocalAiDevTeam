@@ -1,5 +1,6 @@
 # Secrets / local config
 config.env
+kluczyk
 *.env.local
 .env
 
